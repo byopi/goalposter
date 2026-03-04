@@ -1,14 +1,3 @@
-"""
-Bot de Telegram - Reenvío de goles con panel de control
-Adaptado para Render.com + Uptime Robot (keepalive HTTP server incluido)
-
-INSTALACIÓN LOCAL:
-    pip install -r requirements.txt
-
-DEPLOY EN RENDER:
-    Ver README.md
-"""
-
 import re
 import logging
 import json
@@ -307,7 +296,9 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not message or message.chat.id != source:
         return
 
-    original_text = message.text or ""
+    # message.text = mensajes solo texto
+    # message.caption = mensajes con video/foto adjunto
+    original_text = message.text or message.caption or ""
     if not original_text.strip():
         return
 
@@ -317,7 +308,34 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     logger.info(f"[ENVIANDO]\n{transformed}\n{'─'*40}")
-    await context.bot.send_message(chat_id=dest, text=transformed, parse_mode="HTML")
+
+    if message.video:
+        await context.bot.send_video(
+            chat_id=dest,
+            video=message.video.file_id,
+            caption=transformed,
+            parse_mode="HTML"
+        )
+    elif message.animation:
+        await context.bot.send_animation(
+            chat_id=dest,
+            animation=message.animation.file_id,
+            caption=transformed,
+            parse_mode="HTML"
+        )
+    elif message.photo:
+        await context.bot.send_photo(
+            chat_id=dest,
+            photo=message.photo[-1].file_id,
+            caption=transformed,
+            parse_mode="HTML"
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=dest,
+            text=transformed,
+            parse_mode="HTML"
+        )
 
 # ─────────────────────────────────────────
 #                  MAIN
