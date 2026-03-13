@@ -1,3 +1,14 @@
+"""
+Bot de Telegram - Reenvío de goles con panel de control
+Adaptado para Render.com + Uptime Robot (keepalive HTTP server incluido)
+
+INSTALACIÓN LOCAL:
+    pip install -r requirements.txt
+
+DEPLOY EN RENDER:
+    Ver README.md
+"""
+
 import re
 import logging
 import json
@@ -105,29 +116,58 @@ def transform_message(text: str) -> str | None:
     if not any(kw in first_line for kw in goal_keywords):
         return None
 
-    score_line = scorer_line = assist_line = hashtag_line = None
+    score_line = scorer_line = assist_line = hashtag_line = global_line = None
 
     for line in lines:
         s = line.strip()
-        if re.search(r'\d+\s*[xX×\-]\s*\d+', s):
+
+        # Línea del marcador del partido: tiene bandera O empieza con bandera/nombre de equipo
+        # La distinguimos de la línea del global (que empieza con 🏆)
+        if re.search(r'\d+\s*[xX×]\s*\d+', s) and not s.startswith("🏆") and not s.startswith("#"):
+            # Es la línea de marcador real si contiene banderas de países junto a nombres de equipos
+            # O simplemente no es una línea de hashtag/trofeo
             score_line = s
+
         if s.startswith("⚽"):
             scorer_line = s
         if s.startswith("🅰"):
             assist_line = s
         if s.startswith("#"):
             hashtag_line = s
+
+        # Línea con 🏆: puede ser solo hashtag o hashtag + global (ej: #Libertadores 🌎 - 🇨🇴 3x2 🇺🇾)
         if s.startswith("🏆"):
             inner = s.replace("🏆", "").strip()
-            if inner.startswith("#"):
+            # Separar el hashtag del marcador global si existe
+            # Formato típico: "#Libertadores 🌎 - 🇨🇴 3x2 🇺🇾"
+            global_match = re.search(r'(#\S+.*?)\s*-\s*(.+)', inner)
+            if global_match:
+                hashtag_part = global_match.group(1).strip()
+                global_part  = global_match.group(2).strip()
+                # Limpiar banderas del global y normalizar marcador
+                global_clean = re.sub(r'[\U0001F1E0-\U0001F1FF]{2}', '', global_part).strip()
+                global_clean = re.sub(r'\s{2,}', ' ', global_clean).strip()
+                global_clean = re.sub(r'(\d+)\s*[xX×]\s*(\d+)', r'\1-\2', global_clean)
+                hashtag_line = hashtag_part
+                global_line  = f"(Global: {global_clean})"
+            elif inner.startswith("#"):
                 hashtag_line = inner
 
+    # Limpiar línea del marcador del partido
     if score_line:
         clean = re.sub(r'[\U0001F1E0-\U0001F1FF]{2}', '', score_line).strip()
         clean = re.sub(r'\s{2,}', ' ', clean).strip()
         clean = re.sub(r'(\d+)\s*[xX×]\s*(\d+)', r'\1-\2', clean)
     else:
         clean = None
+
+    # Construir hashtag final con global si existe
+    hashtag_display = None
+    if hashtag_line:
+        if global_line:
+            hashtag_display = f"{hashtag_line} {global_line}"
+        else:
+            hashtag_display = hashtag_line
 
     parts = []
     if clean:
@@ -138,8 +178,8 @@ def transform_message(text: str) -> str | None:
     if assist_line:
         parts.append(assist_line)
     parts.append("")
-    if hashtag_line:
-        parts.append(f"<b>{hashtag_line}</b>")
+    if hashtag_display:
+        parts.append(f"<b>{hashtag_display}</b>")
     parts.append("")
     parts.append(f"<i>{SUBSCRIBE_LINK}</i>")
 
