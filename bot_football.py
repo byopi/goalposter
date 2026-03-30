@@ -105,10 +105,129 @@ def run_flask():
 authenticated_users: set[int] = set()
 
 # ─────────────────────────────────────────
+#         TRADUCCIÓN PORTUGUÉS → ESPAÑOL
+# ─────────────────────────────────────────
+
+# Países y términos generales (palabra completa, case-insensitive)
+PT_ES_WORDS = {
+    # Países
+    "Uruguai": "Uruguay",
+    "Alemanha": "Alemania",
+    "Holanda": "Países Bajos",
+    "Países Baixos": "Países Bajos",
+    "Franca": "Francia",
+    "França": "Francia",
+    "Espanha": "España",
+    "Suíça": "Suiza",
+    "Suecia": "Suecia",
+    "Suécia": "Suecia",
+    "Noruega": "Noruega",
+    "Dinamarca": "Dinamarca",
+    "Bélgica": "Bélgica",
+    "Polónia": "Polonia",
+    "Polonia": "Polonia",
+    "Croácia": "Croacia",
+    "Sérvia": "Serbia",
+    "Hungria": "Hungría",
+    "Eslováquia": "Eslovaquia",
+    "Eslovénia": "Eslovenia",
+    "Escocia": "Escocia",
+    "Escócia": "Escocia",
+    "Gales": "Gales",
+    "Irlanda": "Irlanda",
+    "Turquia": "Turquía",
+    "Turquia": "Turquía",
+    "Grécia": "Grecia",
+    "Albânia": "Albania",
+    "Romênia": "Rumanía",
+    "Romenia": "Rumanía",
+    "Ucrânia": "Ucrania",
+    "Rússia": "Rusia",
+    "Russia": "Rusia",
+    "Áustria": "Austria",
+    "Republica Checa": "República Checa",
+    "República Checa": "República Checa",
+    "Marrocos": "Marruecos",
+    "Egipto": "Egipto",
+    "Egito": "Egipto",
+    "Argélia": "Argelia",
+    "Argelia": "Argelia",
+    "Nigéria": "Nigeria",
+    "Senegal": "Senegal",
+    "Costa do Marfim": "Costa de Marfil",
+    "Camarões": "Camerún",
+    "Gana": "Ghana",
+    "Guiné": "Guinea",
+    "Tunísia": "Túnez",
+    "Africa do Sul": "Sudáfrica",
+    "África do Sul": "Sudáfrica",
+    "Japão": "Japón",
+    "Coreia do Sul": "Corea del Sur",
+    "Coreia do Norte": "Corea del Norte",
+    "China": "China",
+    "Arábia Saudita": "Arabia Saudita",
+    "Irão": "Irán",
+    "Iran": "Irán",
+    "Austrália": "Australia",
+    "Nova Zelândia": "Nueva Zelanda",
+    "Estados Unidos": "Estados Unidos",
+    "EUA": "EE.UU.",
+    "México": "México",
+    "Costa Rica": "Costa Rica",
+    "Panamá": "Panamá",
+    "Honduras": "Honduras",
+    "Guatemala": "Guatemala",
+    "Jamaica": "Jamaica",
+    "Trinidad e Tobago": "Trinidad y Tobago",
+    "Colômbia": "Colombia",
+    "Bolívia": "Bolivia",
+    "Paraguai": "Paraguay",
+    "Venezuela": "Venezuela",
+    "Equador": "Ecuador",
+    "Perú": "Perú",
+    "Peru": "Perú",
+    "Chile": "Chile",
+    "Argentina": "Argentina",
+    "Brasil": "Brasil",
+    "Brazil": "Brasil",
+    # Términos de fútbol
+    "Golo": "Gol",
+    "Golos": "Goles",
+    "Assistência": "Asistencia",
+    "Penalti": "Penal",
+    "Pênalti": "Penal",
+    "Autogolo": "Autogol",
+    "Intervalo": "Descanso",
+    "Jogo": "Partido",
+}
+
+# Hashtags especiales con reemplazo exacto
+PT_ES_HASHTAGS = {
+    "#RepescagemUEFA": "#RepescaUEFA",
+    "#RepescagemIntercontinental": "#RepescaFIFA",
+}
+
+def translate_pt_es(text: str) -> str:
+    """Traduce términos en portugués al español antes de transformar el mensaje."""
+
+    # 1. Reemplazar hashtags especiales (exacto, case-insensitive)
+    for pt, es in PT_ES_HASHTAGS.items():
+        text = re.sub(re.escape(pt), es, text, flags=re.IGNORECASE)
+
+    # 2. Reemplazar palabras/frases completas (respeta límites de palabra)
+    for pt, es in PT_ES_WORDS.items():
+        text = re.sub(r'(?<![\w#])' + re.escape(pt) + r'(?![\w])', es, text, flags=re.IGNORECASE)
+
+    return text
+
+# ─────────────────────────────────────────
 #         LÓGICA DE TRANSFORMACIÓN
 # ─────────────────────────────────────────
 
 def transform_message(text: str) -> str | None:
+    # Traducir portugués → español antes de procesar
+    text = translate_pt_es(text)
+
     lines = text.strip().splitlines()
 
     first_line = lines[0].upper() if lines else ""
