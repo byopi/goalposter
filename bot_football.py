@@ -1,12 +1,6 @@
 """
 Bot de Telegram - Reenvío de goles con panel de control
 Adaptado para Render.com + Uptime Robot (keepalive HTTP server incluido)
-
-INSTALACIÓN LOCAL:
-    pip install -r requirements.txt
-
-DEPLOY EN RENDER:
-    Ver README.md
 """
 
 import re
@@ -68,7 +62,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────
-#   SERVIDOR FLASK (keepalive para Render)
+#    SERVIDOR FLASK (keepalive para Render)
 # ─────────────────────────────────────────
 
 flask_app = Flask(__name__)
@@ -79,8 +73,8 @@ def home():
     dst = canal_config.get("dest")   or "no configurado"
     return (
         f"<h2>✅ Bot activo</h2>"
-        f"<p>Canal origen: <code>{src}</code></p>"
-        f"<p>Canal destino: <code>{dst}</code></p>"
+        f"<p>Chat/Canal origen: <code>{src}</code></p>"
+        f"<p>Chat/Canal destino: <code>{dst}</code></p>"
     ), 200
 
 @flask_app.route("/health")
@@ -108,9 +102,7 @@ authenticated_users: set[int] = set()
 #         TRADUCCIÓN PORTUGUÉS → ESPAÑOL
 # ─────────────────────────────────────────
 
-# Países y términos generales (palabra completa, case-insensitive)
 PT_ES_WORDS = {
-    # Países
     "Uruguai": "Uruguay",
     "Alemanha": "Alemania",
     "Holanda": "Países Bajos",
@@ -135,7 +127,6 @@ PT_ES_WORDS = {
     "Escócia": "Escocia",
     "Gales": "Gales",
     "Irlanda": "Irlanda",
-    "Turquia": "Turquía",
     "Turquia": "Turquía",
     "Grécia": "Grecia",
     "Albânia": "Albania",
@@ -190,7 +181,6 @@ PT_ES_WORDS = {
     "Argentina": "Argentina",
     "Brasil": "Brasil",
     "Brazil": "Brasil",
-    # Términos de fútbol
     "Golo": "Gol",
     "Golos": "Goles",
     "Assistência": "Asistencia",
@@ -201,23 +191,16 @@ PT_ES_WORDS = {
     "Jogo": "Partido",
 }
 
-# Hashtags especiales con reemplazo exacto
 PT_ES_HASHTAGS = {
     "#RepescagemUEFA": "#RepescaUEFA",
     "#RepescagemIntercontinental": "#RepescaFIFA",
 }
 
 def translate_pt_es(text: str) -> str:
-    """Traduce términos en portugués al español antes de transformar el mensaje."""
-
-    # 1. Reemplazar hashtags especiales (exacto, case-insensitive)
     for pt, es in PT_ES_HASHTAGS.items():
         text = re.sub(re.escape(pt), es, text, flags=re.IGNORECASE)
-
-    # 2. Reemplazar palabras/frases completas (respeta límites de palabra)
     for pt, es in PT_ES_WORDS.items():
         text = re.sub(r'(?<![\w#])' + re.escape(pt) + r'(?![\w])', es, text, flags=re.IGNORECASE)
-
     return text
 
 # ─────────────────────────────────────────
@@ -225,45 +208,30 @@ def translate_pt_es(text: str) -> str:
 # ─────────────────────────────────────────
 
 def transform_message(text: str) -> str | None:
-    # Traducir portugués → español antes de procesar
     text = translate_pt_es(text)
-
     lines = text.strip().splitlines()
-
     first_line = lines[0].upper() if lines else ""
     goal_keywords = ["GOL", "GOAL", "GOLO", "⚽"]
     if not any(kw in first_line for kw in goal_keywords):
         return None
 
     score_line = scorer_line = assist_line = hashtag_line = global_line = None
-
     for line in lines:
         s = line.strip()
-
-        # Línea del marcador del partido: tiene bandera O empieza con bandera/nombre de equipo
-        # La distinguimos de la línea del global (que empieza con 🏆)
         if re.search(r'\d+\s*[xX×]\s*\d+', s) and not s.startswith("🏆") and not s.startswith("#"):
-            # Es la línea de marcador real si contiene banderas de países junto a nombres de equipos
-            # O simplemente no es una línea de hashtag/trofeo
             score_line = s
-
         if s.startswith("⚽"):
             scorer_line = s
         if s.startswith("🅰"):
             assist_line = s
         if s.startswith("#"):
             hashtag_line = s
-
-        # Línea con 🏆: puede ser solo hashtag o hashtag + global (ej: #Libertadores 🌎 - 🇨🇴 3x2 🇺🇾)
         if s.startswith("🏆"):
             inner = s.replace("🏆", "").strip()
-            # Separar el hashtag del marcador global si existe
-            # Formato típico: "#Libertadores 🌎 - 🇨🇴 3x2 🇺🇾"
             global_match = re.search(r'(#\S+.*?)\s*-\s*(.+)', inner)
             if global_match:
                 hashtag_part = global_match.group(1).strip()
                 global_part  = global_match.group(2).strip()
-                # Limpiar banderas del global y normalizar marcador
                 global_clean = re.sub(r'[\U0001F1E0-\U0001F1FF]{2}', '', global_part).strip()
                 global_clean = re.sub(r'\s{2,}', ' ', global_clean).strip()
                 global_clean = re.sub(r'(\d+)\s*[xX×]\s*(\d+)', r'\1-\2', global_clean)
@@ -272,7 +240,6 @@ def transform_message(text: str) -> str | None:
             elif inner.startswith("#"):
                 hashtag_line = inner
 
-    # Limpiar línea del marcador del partido
     if score_line:
         clean = re.sub(r'[\U0001F1E0-\U0001F1FF]{2}', '', score_line).strip()
         clean = re.sub(r'\s{2,}', ' ', clean).strip()
@@ -280,13 +247,9 @@ def transform_message(text: str) -> str | None:
     else:
         clean = None
 
-    # Construir hashtag final con global si existe
     hashtag_display = None
     if hashtag_line:
-        if global_line:
-            hashtag_display = f"{hashtag_line} {global_line}"
-        else:
-            hashtag_display = hashtag_line
+        hashtag_display = f"{hashtag_line} {global_line}" if global_line else hashtag_line
 
     parts = []
     if clean:
@@ -301,21 +264,20 @@ def transform_message(text: str) -> str | None:
         parts.append(f"<b>{hashtag_display}</b>")
     parts.append("")
     parts.append(f"<i>{SUBSCRIBE_LINK}</i>")
-
     return "\n".join(parts).strip()
 
 # ─────────────────────────────────────────
-#              HELPERS DE MENÚ
+#               HELPERS DE MENÚ
 # ─────────────────────────────────────────
 
 def build_main_menu() -> InlineKeyboardMarkup:
     src = canal_config.get("source") or "❌ No configurado"
     dst = canal_config.get("dest")   or "❌ No configurado"
     keyboard = [
-        [InlineKeyboardButton(f"📥 Canal Origen: {src}",  callback_data="set_source")],
-        [InlineKeyboardButton(f"📤 Canal Destino: {dst}", callback_data="set_dest")],
-        [InlineKeyboardButton("✉️  Enviar mensaje manual",  callback_data="send_msg")],
-        [InlineKeyboardButton("🔄 Recargar menú",           callback_data="refresh")],
+        [InlineKeyboardButton(f"📥 Origen: {src}",  callback_data="set_source")],
+        [InlineKeyboardButton(f"📤 Destino: {dst}", callback_data="set_dest")],
+        [InlineKeyboardButton("✉️ Enviar manual",  callback_data="send_msg")],
+        [InlineKeyboardButton("🔄 Recargar menú",   callback_data="refresh")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -328,7 +290,7 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edit=Fal
         await update.effective_message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
 
 # ─────────────────────────────────────────
-#          FLUJO: /start + contraseña
+#         FLUJO: /start + contraseña
 # ─────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -336,127 +298,99 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if user_id in authenticated_users:
         await show_menu(update, context)
         return STATE_MENU
-    await update.message.reply_text(
-        "🔐 *Bot protegido*\n\nIntroduce la contraseña para continuar:",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("🔐 *Bot protegido*\n\nIntroduce la contraseña:", parse_mode="Markdown")
     return STATE_PASSWORD
 
 async def check_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    text = update.message.text.strip()
-    if text == PASSWORD:
+    if update.message.text.strip() == PASSWORD:
         authenticated_users.add(user_id)
         await update.message.reply_text("✅ Acceso concedido.")
         await show_menu(update, context)
         return STATE_MENU
-    await update.message.reply_text("❌ Contraseña incorrecta. Inténtalo de nuevo:")
+    await update.message.reply_text("❌ Contraseña incorrecta. Reintenta:")
     return STATE_PASSWORD
 
 # ─────────────────────────────────────────
-#          FLUJO: BOTONES DEL MENÚ
+#         FLUJO: BOTONES DEL MENÚ
 # ─────────────────────────────────────────
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    user_id = update.effective_user.id
-
-    if user_id not in authenticated_users:
-        await query.edit_message_text("🔐 Sesión expirada. Usa /start para volver a entrar.")
+    if update.effective_user.id not in authenticated_users:
+        await query.edit_message_text("🔐 Sesión expirada. Usa /start.")
         return STATE_PASSWORD
 
-    data = query.data
-
-    if data == "set_source":
-        await query.edit_message_text(
-            "📥 *Canal Origen*\n\nEnvía el ID numérico del canal privado.\n"
-            "Ejemplo: `-1001234567890`\n\n"
-            "_(Añade @userinfobot al canal y escribe /id para obtenerlo)_",
-            parse_mode="Markdown"
-        )
+    if query.data == "set_source":
+        await query.edit_message_text("📥 *Origen*\nEnvía el ID numérico del canal o grupo.", parse_mode="Markdown")
         return STATE_SET_SOURCE
-
-    elif data == "set_dest":
-        await query.edit_message_text(
-            "📤 *Canal Destino*\n\nEnvía el `@username` o ID numérico del canal.\n"
-            "Ejemplo: `@iUniversoFootball` o `-1009876543210`",
-            parse_mode="Markdown"
-        )
+    elif query.data == "set_dest":
+        await query.edit_message_text("📤 *Destino*\nEnvía el `@username` o ID numérico.", parse_mode="Markdown")
         return STATE_SET_DEST
-
-    elif data == "send_msg":
-        await query.edit_message_text(
-            "✉️ *Enviar mensaje manual*\n\n"
-            "Escribe el mensaje que quieres publicar en el canal destino.\n\n"
-            "_(Soporta texto normal y emojis)_",
-            parse_mode="Markdown"
-        )
+    elif query.data == "send_msg":
+        await query.edit_message_text("✉️ *Manual*\nEscribe el mensaje a publicar.", parse_mode="Markdown")
         return STATE_SEND_MSG
-
-    elif data == "refresh":
+    elif query.data == "refresh":
         await show_menu(update, context, edit=True)
-        return STATE_MENU
-
     return STATE_MENU
 
 async def set_source(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    if not text.lstrip("-").isdigit():
-        await update.message.reply_text(
-            "⚠️ El ID debe ser un número negativo. Ej: `-1001234567890`\nInténtalo de nuevo:"
-        )
+    # Modificado para aceptar IDs de grupos (pueden ser negativos sin empezar por -100)
+    if not text.replace("-", "").isdigit():
+        await update.message.reply_text("⚠️ El ID debe ser un número. Reintenta:")
         return STATE_SET_SOURCE
     canal_config["source"] = int(text)
     save_config(canal_config)
-    await update.message.reply_text(f"✅ Canal origen guardado: `{text}`", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ Origen guardado: `{text}`", parse_mode="Markdown")
     await show_menu(update, context)
     return STATE_MENU
 
 async def set_dest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    canal_config["dest"] = int(text) if text.lstrip("-").isdigit() else text
+    canal_config["dest"] = int(text) if text.replace("-", "").isdigit() else text
     save_config(canal_config)
-    await update.message.reply_text(f"✅ Canal destino guardado: `{text}`", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ Destino guardado: `{text}`", parse_mode="Markdown")
     await show_menu(update, context)
     return STATE_MENU
 
 async def send_manual_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     dest = canal_config.get("dest")
     if not dest:
-        await update.message.reply_text("⚠️ No hay canal destino configurado.")
+        await update.message.reply_text("⚠️ Sin destino configurado.")
         await show_menu(update, context)
         return STATE_MENU
-    text = update.message.text.strip()
     try:
-        await context.bot.send_message(chat_id=dest, text=text)
-        await update.message.reply_text("✅ Mensaje enviado correctamente.")
+        await context.bot.send_message(chat_id=dest, text=update.message.text.strip())
+        await update.message.reply_text("✅ Enviado.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error al enviar: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
     await show_menu(update, context)
     return STATE_MENU
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Operación cancelada.")
+    await update.message.reply_text("Cancelado.")
     await show_menu(update, context)
     return STATE_MENU
 
 # ─────────────────────────────────────────
-#      HANDLER: POSTS DEL CANAL ORIGEN
+#    HANDLER: POSTS DE CANAL Y GRUPO
 # ─────────────────────────────────────────
 
-async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.channel_post
+async def handle_any_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Detecta si el mensaje viene de un canal o de un grupo/supergrupo
+    message = update.channel_post or update.message
     source  = canal_config.get("source")
     dest    = canal_config.get("dest")
 
-    if not source or not dest:
+    if not source or not dest or not message:
         return
-    if not message or message.chat.id != source:
+    
+    # Compara el ID del chat de origen
+    if message.chat.id != source:
         return
 
-    # message.text = mensajes solo texto
-    # message.caption = mensajes con video/foto adjunto
     original_text = message.text or message.caption or ""
     if not original_text.strip():
         return
@@ -466,47 +400,25 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.info(f"[IGNORADO] {original_text[:60]}…")
         return
 
-    logger.info(f"[ENVIANDO]\n{transformed}\n{'─'*40}")
+    logger.info(f"[ENVIANDO]\n{transformed}")
 
+    # Reenvío de multimedia
     if message.video:
-        await context.bot.send_video(
-            chat_id=dest,
-            video=message.video.file_id,
-            caption=transformed,
-            parse_mode="HTML"
-        )
+        await context.bot.send_video(chat_id=dest, video=message.video.file_id, caption=transformed, parse_mode="HTML")
     elif message.animation:
-        await context.bot.send_animation(
-            chat_id=dest,
-            animation=message.animation.file_id,
-            caption=transformed,
-            parse_mode="HTML"
-        )
+        await context.bot.send_animation(chat_id=dest, animation=message.animation.file_id, caption=transformed, parse_mode="HTML")
     elif message.photo:
-        await context.bot.send_photo(
-            chat_id=dest,
-            photo=message.photo[-1].file_id,
-            caption=transformed,
-            parse_mode="HTML"
-        )
+        await context.bot.send_photo(chat_id=dest, photo=message.photo[-1].file_id, caption=transformed, parse_mode="HTML")
     else:
-        await context.bot.send_message(
-            chat_id=dest,
-            text=transformed,
-            parse_mode="HTML"
-        )
+        await context.bot.send_message(chat_id=dest, text=transformed, parse_mode="HTML")
 
 # ─────────────────────────────────────────
-#                  MAIN
+#                   MAIN
 # ─────────────────────────────────────────
 
 def main():
     logger.info("Iniciando bot…")
-
-    # Arrancar Flask en hilo separado (keepalive para Render + Uptime Robot)
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    logger.info(f"Servidor keepalive activo en puerto {PORT}")
+    threading.Thread(target=run_flask, daemon=True).start()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -525,11 +437,15 @@ def main():
     )
 
     app.add_handler(conv)
-    app.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
+    
+    # Este handler ahora captura tanto mensajes de canal como de grupos
+    app.add_handler(MessageHandler(
+        (filters.ChatType.CHANNEL | filters.ChatType.GROUPS) & ~filters.COMMAND, 
+        handle_any_post
+    ))
 
-    logger.info("Esperando mensajes (Ctrl+C para detener)")
+    logger.info("Esperando mensajes...")
     app.run_polling(allowed_updates=["message", "channel_post", "callback_query"])
-
 
 if __name__ == "__main__":
     main()
