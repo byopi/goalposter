@@ -1,569 +1,490 @@
-import os
+"""
+Bot de Telegram - Reenvío de goles con panel de control
+Adaptado para Render.com + Uptime Robot (keepalive HTTP server incluido)
+"""
+
 import re
-import json
 import logging
+import json
+import os
 import threading
-import asyncio
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
 
-import requests
-from telegram import (
-    Bot, Update,
-    InlineKeyboardButton, InlineKeyboardMarkup,
-)
+from dotenv import load_dotenv
+from flask import Flask
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, ContextTypes, ConversationHandler,
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    filters,
+    ContextTypes,
 )
-from telegram.error import TelegramError
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from video import process_video
+# ─────────────────────────────────────────
+#         CARGAR VARIABLES DE ENTORNO
+# ─────────────────────────────────────────
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+load_dotenv()
+
+BOT_TOKEN      = os.getenv("BOT_TOKEN")
+SUBSCRIBE_LINK = os.getenv("SUBSCRIBE_LINK", "Suscríbete en t.me/iUniversoFootball")
+PASSWORD       = os.getenv("PASSWORD", "gfa1234")
+PORT           = int(os.getenv("PORT", 8080))   # Render inyecta $PORT automáticamente
+CONFIG_FILE    = Path("/tmp/canal_config.json")  # /tmp es escribible en Render
+
+# ─────────────────────────────────────────
+#         PERSISTENCIA DE CANALES
+# ─────────────────────────────────────────
+
+def load_config() -> dict:
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE) as f:
+            return json.load(f)
+    return {"source": None, "dest": None}
+
+def save_config(data: dict):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(data, f)
+
+canal_config = load_config()
+
+# ─────────────────────────────────────────
+#               LOGGING
+# ─────────────────────────────────────────
+
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
-TOKEN     = os.environ["TOKEN"]
-ADMIN_ID  = int(os.environ["ADMIN_ID"])   # tu Telegram user ID
-SUBREDDIT = os.environ.get("SUBREDDIT", "soccer")
-PORT      = int(os.environ.get("PORT", 8080))
-
-CHANNELS_FILE = "/tmp/channels.json"
-
-# ── Conversation states ───────────────────────────────────────────────────────
-(
-    STATE_MENU,
-    STATE_CHOOSE_CHANNEL,
-    STATE_TYPING_MESSAGE,
-    STATE_ADD_CHANNEL,
-    STATE_REMOVE_CHANNEL,
-    STATE_CHOOSE_MIRROR_CHANNEL,
-) = range(6)
-
-# ── Reddit constants ──────────────────────────────────────────────────────────
-VIDEO_DOMAINS = (
-    "v.redd.it", "youtube.com", "youtu.be",
-    "streamable.com", "streamja.com", "clippituser.tv",
-    "medal.tv", "clips.twitch.tv", "gfycat.com",
-    "streamain.com", "dubz.link", "dubz.co",
-    "streamin.one", "streamin.me", "streamff.link", "streamin.link",
-)
-
-IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
-
-REDDIT_HEADERS = {"User-Agent": "telegram-mirror-bot/1.0"}
-
-seen_posts: set = set()
-
-# ── Lógica de Parafraseo (Traducción) ─────────────────────────────────────────
-
-def paraphrase_title(title: str) -> str:
-    """Traduce términos de fútbol y limpia el formato del título"""
-    # Diccionario de traducciones comunes
-    subs = {
-        r'\bvs\b': 'vs.',
-        r'\bGoal\b': 'Gol',
-        r'\bGolo\b': 'Gol',
-        r'\bGreat Goal\b': 'GOLAZO',
-        r'\bPenalty\b': 'Penalti',
-        r'\bUruguay\b': 'Uruguay',
-        r'\bGermany\b': 'Alemania',
-        r'\bSpain\b': 'España',
-        r'\bFrance\b': 'Francia',
-        r'\bBrazil\b': 'Brasil',
-        r'\bNetherlands\b': 'Países Bajos',
-        r'\bItaly\b': 'Italia',
-        r'\bEngland\b': 'Inglaterra',
-        r'\bPortugal\b': 'Portugal',
-        r'\bBelgium\b': 'Bélgica',
-        r'\[(\d+)\s*-\s*(\d+)\]': r'(\1-\2)', # Cambia [1 - 0] por (1-0)
-        r'(\d+)\s*[xX×]\s*(\d+)': r'\1-\2',    # Cambia 1x0 o 1x0 por 1-0
-    }
-    
-    new_title = title
-    for pattern, replacement in subs.items():
-        new_title = re.sub(pattern, replacement, new_title, flags=re.IGNORECASE)
-    
-    # Eliminar texto entre corchetes innecesario (como nombres de proveedores)
-    new_title = re.sub(r'\[.*?\]', '', new_title).strip()
-    
-    return new_title
-
-# ── Channel storage ───────────────────────────────────────────────────────────
-
-def load_channels() -> dict:
-    try:
-        with open(CHANNELS_FILE) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"channels": {}, "mirror_channel": None}
-
-
-def save_channels(data: dict):
-    with open(CHANNELS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-
-# ── Health-check server ───────────────────────────────────────────────────────
-
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-
-    def log_message(self, *args):
-        pass
-
-
-def start_health_server():
-    HTTPServer(("0.0.0.0", PORT), HealthHandler).serve_forever()
-
-
-# ── Admin guard ───────────────────────────────────────────────────────────────
-
-def admin_only(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id != ADMIN_ID:
-            await update.effective_message.reply_text("⛔ No autorizado.")
-            return ConversationHandler.END
-        return await func(update, context)
-    wrapper.__name__ = func.__name__
-    return wrapper
-
-
-# ── Menu helpers ──────────────────────────────────────────────────────────────
-
-def main_menu_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Enviar mensaje a canal", callback_data="send_msg")],
-        [InlineKeyboardButton("➕ Agregar canal",          callback_data="add_channel")],
-        [InlineKeyboardButton("➖ Eliminar canal",         callback_data="remove_channel")],
-        [InlineKeyboardButton("🔄 Canal del mirror",       callback_data="mirror_channel")],
-        [InlineKeyboardButton("📋 Ver canales",            callback_data="list_channels")],
-    ])
-
-
-async def show_main_menu(target, context):
-    text = "🎛 *Panel de control*\n\nElige una opción:"
-    kb   = main_menu_keyboard()
-    if hasattr(target, "edit_message_text"):
-        await target.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
-    else:
-        await target.reply_text(text, parse_mode="Markdown", reply_markup=kb)
-
-
-# ── /menu command ─────────────────────────────────────────────────────────────
-
-@admin_only
-async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu(update.message, context)
-    return STATE_MENU
-
-
-# ── Callback: main menu buttons ───────────────────────────────────────────────
-
-async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if update.effective_user.id != ADMIN_ID:
-        return ConversationHandler.END
-
-    data     = load_channels()
-    channels = data["channels"]
-
-    if query.data == "send_msg":
-        if not channels:
-            await query.edit_message_text(
-                "No hay canales registrados. Agrega uno primero.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="back")]])
-            )
-            return STATE_MENU
-        rows = [[InlineKeyboardButton(ch, callback_data=f"ch::{ch}")] for ch in channels]
-        rows.append([InlineKeyboardButton("⬅️ Volver", callback_data="back")])
-        await query.edit_message_text(
-            "📢 *¿A qué canal quieres enviar el mensaje?*",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(rows),
-        )
-        return STATE_CHOOSE_CHANNEL
-
-    if query.data == "add_channel":
-        await query.edit_message_text(
-            "➕ Escribe el ID o username del canal a agregar.\n\n"
-            "Ejemplos: `@mi_canal` o `-1001234567890`\n\n"
-            "⚠️ El bot debe ser administrador del canal.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="back")]])
-        )
-        return STATE_ADD_CHANNEL
-
-    if query.data == "remove_channel":
-        if not channels:
-            await query.edit_message_text(
-                "No hay canales registrados.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="back")]])
-            )
-            return STATE_MENU
-        rows = [[InlineKeyboardButton(f"🗑 {ch}", callback_data=f"del::{ch}")] for ch in channels]
-        rows.append([InlineKeyboardButton("⬅️ Volver", callback_data="back")])
-        await query.edit_message_text(
-            "➖ *¿Qué canal quieres eliminar?*",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(rows),
-        )
-        return STATE_REMOVE_CHANNEL
-
-    if query.data == "mirror_channel":
-        if not channels:
-            await query.edit_message_text(
-                "No hay canales registrados. Agrega uno primero.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="back")]])
-            )
-            return STATE_MENU
-        current = data.get("mirror_channel", "ninguno")
-        rows = [[InlineKeyboardButton(
-            f"{'✅ ' if ch == current else ''}{ch}", callback_data=f"mirror::{ch}"
-        )] for ch in channels]
-        rows.append([InlineKeyboardButton("⬅️ Volver", callback_data="back")])
-        await query.edit_message_text(
-            f"🔄 *Canal del mirror de Reddit*\nActual: `{current}`\n\nElige el canal:",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(rows),
-        )
-        return STATE_CHOOSE_MIRROR_CHANNEL
-
-    if query.data == "list_channels":
-        mirror = data.get("mirror_channel", "ninguno")
-        lines  = "\n".join(
-            f"• `{ch}`{'  🔄 mirror' if ch == mirror else ''}" for ch in channels
-        ) if channels else "_No hay canales registrados._"
-        await query.edit_message_text(
-            f"📋 *Canales registrados:*\n\n{lines}",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="back")]])
-        )
-        return STATE_MENU
-
-    if query.data == "back":
-        await show_main_menu(query, context)
-        return STATE_MENU
-
-
-# ── Choose channel → ask for message ─────────────────────────────────────────
-
-async def cb_choose_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "back":
-        await show_main_menu(query, context)
-        return STATE_MENU
-
-    channel = query.data.replace("ch::", "")
-    context.user_data["target_channel"] = channel
-    await query.edit_message_text(
-        f"📝 Escribe el mensaje para *{channel}*:\n_(texto, foto, video o documento)_",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Cancelar", callback_data="back")]])
-    )
-    return STATE_TYPING_MESSAGE
-
-
-# ── Forward message to channel ────────────────────────────────────────────────
-
-async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    channel = context.user_data.get("target_channel")
-    if not channel:
-        return ConversationHandler.END
-
-    msg = update.message
-    try:
-        if msg.text:
-            await context.bot.send_message(chat_id=channel, text=msg.text)
-        elif msg.photo:
-            await context.bot.send_photo(chat_id=channel, photo=msg.photo[-1].file_id, caption=msg.caption or "")
-        elif msg.video:
-            await context.bot.send_video(chat_id=channel, video=msg.video.file_id, caption=msg.caption or "", supports_streaming=True)
-        elif msg.document:
-            await context.bot.send_document(chat_id=channel, document=msg.document.file_id, caption=msg.caption or "")
-        elif msg.animation:
-            await context.bot.send_animation(chat_id=channel, animation=msg.animation.file_id, caption=msg.caption or "")
-        else:
-            await msg.reply_text("❌ Tipo de mensaje no soportado.")
-            return STATE_TYPING_MESSAGE
-
-        await msg.reply_text(
-            f"✅ Enviado a *{channel}*",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver al menú", callback_data="back")]])
-        )
-    except TelegramError as e:
-        await msg.reply_text(f"❌ Error: `{e}`\n\nVerifica que el bot sea admin del canal.", parse_mode="Markdown")
-
-    return STATE_MENU
-
-
-# ── Add channel ───────────────────────────────────────────────────────────────
-
-async def receive_add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    channel_id = update.message.text.strip()
-    data       = load_channels()
-    try:
-        chat = await context.bot.get_chat(channel_id)
-        key  = f"@{chat.username}" if chat.username else str(chat.id)
-    except TelegramError as e:
-        await update.message.reply_text(
-            f"❌ No pude acceder al canal `{channel_id}`.\nError: `{e}`\n\n"
-            "Verifica que el bot sea administrador.",
-            parse_mode="Markdown",
-        )
-        return STATE_ADD_CHANNEL
-
-    data["channels"][key] = {"name": key}
-    if not data.get("mirror_channel"):
-        data["mirror_channel"] = key
-    save_channels(data)
-
-    await update.message.reply_text(
-        f"✅ Canal *{key}* agregado.",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver al menú", callback_data="back")]])
-    )
-    return STATE_MENU
-
-
-# ── Remove channel ────────────────────────────────────────────────────────────
-
-async def cb_remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "back":
-        await show_main_menu(query, context)
-        return STATE_MENU
-
-    channel = query.data.replace("del::", "")
-    data    = load_channels()
-
-    if channel in data["channels"]:
-        del data["channels"][channel]
-        if data.get("mirror_channel") == channel:
-            remaining = list(data["channels"].keys())
-            data["mirror_channel"] = remaining[0] if remaining else None
-        save_channels(data)
-
-    await query.edit_message_text(
-        f"🗑 Canal *{channel}* eliminado.",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver al menú", callback_data="back")]])
-    )
-    return STATE_MENU
-
-
-# ── Set mirror channel ────────────────────────────────────────────────────────
-
-async def cb_set_mirror(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "back":
-        await show_main_menu(query, context)
-        return STATE_MENU
-
-    channel = query.data.replace("mirror::", "")
-    data    = load_channels()
-    data["mirror_channel"] = channel
-    save_channels(data)
-
-    await query.edit_message_text(
-        f"✅ Mirror establecido: *{channel}*",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver al menú", callback_data="back")]])
-    )
-    return STATE_MENU
-
-
-async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Operación cancelada.")
-    return ConversationHandler.END
-
-
-# ── Reddit mirror logic ───────────────────────────────────────────────────────
-
-def fetch_new_posts():
-    url = f"https://www.reddit.com/r/{SUBREDDIT}/new.json?limit=10"
-    try:
-        resp = requests.get(url, headers=REDDIT_HEADERS, timeout=15)
-        resp.raise_for_status()
-        return resp.json()["data"]["children"]
-    except Exception as e:
-        logger.error(f"Error fetching Reddit JSON: {e}")
-        return []
-
-
-def is_media_post(post):
-    flair   = (post.get("link_flair_text") or "").lower()
-    url_low = post.get("url", "").lower().split("?")[0]
-    if any(url_low.endswith(ext) for ext in IMAGE_EXTENSIONS):
-        return False
+# ─────────────────────────────────────────
+#    SERVIDOR FLASK (keepalive para Render)
+# ─────────────────────────────────────────
+
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    src = canal_config.get("source") or "no configurado"
+    dst = canal_config.get("dest")   or "no configurado"
     return (
-        "media" in flair
-        or post.get("is_video", False)
-        or any(d in url_low for d in VIDEO_DOMAINS)
+        f"<h2>✅ Bot activo</h2>"
+        f"<p>Canal origen: <code>{src}</code></p>"
+        f"<p>Canal destino: <code>{dst}</code></p>"
+    ), 200
+
+@flask_app.route("/health")
+def health():
+    return "OK", 200
+
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=PORT)
+
+# ─────────────────────────────────────────
+#      ESTADOS DE CONVERSACIÓN (menú)
+# ─────────────────────────────────────────
+
+(
+    STATE_PASSWORD,
+    STATE_MENU,
+    STATE_SET_SOURCE,
+    STATE_SET_DEST,
+    STATE_SEND_MSG,
+) = range(5)
+
+authenticated_users: set[int] = set()
+
+# ─────────────────────────────────────────
+#          TRADUCCIÓN PORTUGUÉS → ESPAÑOL
+# ─────────────────────────────────────────
+
+PT_ES_WORDS = {
+    "Uruguai": "Uruguay",
+    "Alemanha": "Alemania",
+    "Holanda": "Países Bajos",
+    "Países Baixos": "Países Bajos",
+    "Franca": "Francia",
+    "França": "Francia",
+    "Espanha": "España",
+    "Suíça": "Suiza",
+    "Suecia": "Suecia",
+    "Suécia": "Suecia",
+    "Noruega": "Noruega",
+    "Dinamarca": "Dinamarca",
+    "Bélgica": "Bélgica",
+    "Polónia": "Polonia",
+    "Polonia": "Polonia",
+    "Croácia": "Croacia",
+    "Sérvia": "Serbia",
+    "Hungria": "Hungría",
+    "Eslováquia": "Eslovaquia",
+    "Eslovénia": "Eslovenia",
+    "Escocia": "Escocia",
+    "Escócia": "Escocia",
+    "Gales": "Gales",
+    "Irlanda": "Irlanda",
+    "Turquia": "Turquía",
+    "Grécia": "Grecia",
+    "Albânia": "Albania",
+    "Romênia": "Rumanía",
+    "Romenia": "Rumanía",
+    "Ucrânia": "Ucrania",
+    "Rússia": "Rusia",
+    "Russia": "Rusia",
+    "Áustria": "Austria",
+    "Republica Checa": "República Checa",
+    "República Checa": "República Checa",
+    "Marrocos": "Marruecos",
+    "Egipto": "Egipto",
+    "Egito": "Egipto",
+    "Argélia": "Argelia",
+    "Argelia": "Argelia",
+    "Nigéria": "Nigeria",
+    "Senegal": "Senegal",
+    "Costa do Marfim": "Costa de Marfil",
+    "Camarões": "Camerún",
+    "Gana": "Ghana",
+    "Guiné": "Guinea",
+    "Tunísia": "Túnez",
+    "Africa do Sul": "Sudáfrica",
+    "África do Sul": "Sudáfrica",
+    "Japão": "Japón",
+    "Coreia do Sul": "Corea del Sur",
+    "Coreia do Norte": "Corea del Norte",
+    "China": "China",
+    "Arábia Saudita": "Arabia Saudita",
+    "Irão": "Irán",
+    "Iran": "Irán",
+    "Austrália": "Australia",
+    "Nova Zelândia": "Nueva Zelanda",
+    "Estados Unidos": "Estados Unidos",
+    "EUA": "EE.UU.",
+    "México": "México",
+    "Costa Rica": "Costa Rica",
+    "Panamá": "Panamá",
+    "Honduras": "Honduras",
+    "Guatemala": "Guatemala",
+    "Jamaica": "Jamaica",
+    "Trinidad e Tobago": "Trinidad y Tobago",
+    "Colômbia": "Colombia",
+    "Bolívia": "Bolivia",
+    "Paraguai": "Paraguay",
+    "Venezuela": "Venezuela",
+    "Equador": "Ecuador",
+    "Perú": "Perú",
+    "Peru": "Perú",
+    "Chile": "Chile",
+    "Argentina": "Argentina",
+    "Brasil": "Brasil",
+    "Brazil": "Brasil",
+    "Golo": "Gol",
+    "Golos": "Goles",
+    "Assistência": "Asistencia",
+    "Penalti": "Penal",
+    "Pênalti": "Penal",
+    "Autogolo": "Autogol",
+    "Intervalo": "Descanso",
+    "Jogo": "Partido",
+}
+
+PT_ES_HASHTAGS = {
+    "#RepescagemUEFA": "#RepescaUEFA",
+    "#RepescagemIntercontinental": "#RepescaFIFA",
+}
+
+def translate_pt_es(text: str) -> str:
+    for pt, es in PT_ES_HASHTAGS.items():
+        text = re.sub(re.escape(pt), es, text, flags=re.IGNORECASE)
+    for pt, es in PT_ES_WORDS.items():
+        text = re.sub(r'(?<![\w#])' + re.escape(pt) + r'(?![\w])', es, text, flags=re.IGNORECASE)
+    return text
+
+# ─────────────────────────────────────────
+#          LÓGICA DE TRANSFORMACIÓN
+# ─────────────────────────────────────────
+
+def transform_message(text: str) -> str | None:
+    text = translate_pt_es(text)
+    lines = text.strip().splitlines()
+    first_line = lines[0].upper() if lines else ""
+    goal_keywords = ["GOL", "GOAL", "GOLO", "⚽"]
+    if not any(kw in first_line for kw in goal_keywords):
+        return None
+
+    score_line = scorer_line = assist_line = hashtag_line = global_line = None
+
+    for line in lines:
+        s = line.strip()
+        if re.search(r'\d+\s*[xX×]\s*\d+', s) and not s.startswith("🏆") and not s.startswith("#"):
+            score_line = s
+        if s.startswith("⚽"):
+            scorer_line = s
+        if s.startswith("🅰"):
+            assist_line = s
+        if s.startswith("#"):
+            hashtag_line = s
+        if s.startswith("🏆"):
+            inner = s.replace("🏆", "").strip()
+            global_match = re.search(r'(#\S+.*?)\s*-\s*(.+)', inner)
+            if global_match:
+                hashtag_part = global_match.group(1).strip()
+                global_part  = global_match.group(2).strip()
+                global_clean = re.sub(r'[\U0001F1E0-\U0001F1FF]{2}', '', global_part).strip()
+                global_clean = re.sub(r'\s{2,}', ' ', global_clean).strip()
+                global_clean = re.sub(r'(\d+)\s*[xX×]\s*(\d+)', r'\1-\2', global_clean)
+                hashtag_line = hashtag_part
+                global_line  = f"(Global: {global_clean})"
+            elif inner.startswith("#"):
+                hashtag_line = inner
+
+    if score_line:
+        clean = re.sub(r'[\U0001F1E0-\U0001F1FF]{2}', '', score_line).strip()
+        clean = re.sub(r'\s{2,}', ' ', clean).strip()
+        clean = re.sub(r'(\d+)\s*[xX×]\s*(\d+)', r'\1-\2', clean)
+    else:
+        clean = None
+
+    hashtag_display = None
+    if hashtag_line:
+        if global_line:
+            hashtag_display = f"{hashtag_line} {global_line}"
+        else:
+            hashtag_display = hashtag_line
+
+    parts = []
+    if clean:
+        parts.append(f"<b>{clean}</b>")
+    parts.append("")
+    if scorer_line:
+        parts.append(scorer_line)
+    if assist_line:
+        parts.append(assist_line)
+    parts.append("")
+    if hashtag_display:
+        parts.append(f"<b>{hashtag_display}</b>")
+    parts.append("")
+    parts.append(f"<i>{SUBSCRIBE_LINK}</i>")
+
+    return "\n".join(parts).strip()
+
+# ─────────────────────────────────────────
+#               HELPERS DE MENÚ
+# ─────────────────────────────────────────
+
+def build_main_menu() -> InlineKeyboardMarkup:
+    src = canal_config.get("source") or "❌ No configurado"
+    dst = canal_config.get("dest")   or "❌ No configurado"
+    keyboard = [
+        [InlineKeyboardButton(f"📥 Canal Origen: {src}",  callback_data="set_source")],
+        [InlineKeyboardButton(f"📤 Canal Destino: {dst}", callback_data="set_dest")],
+        [InlineKeyboardButton("✉️  Enviar mensaje manual",  callback_data="send_msg")],
+        [InlineKeyboardButton("🔄 Recargar menú",            callback_data="refresh")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edit=False):
+    text   = "🎛 *Panel de control*\n\nSelecciona una opción:"
+    markup = build_main_menu()
+    if edit and update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+    else:
+        await update.effective_message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
+
+# ─────────────────────────────────────────
+#          FLUJO: /start + contraseña
+# ─────────────────────────────────────────
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    if user_id in authenticated_users:
+        await show_menu(update, context)
+        return STATE_MENU
+    await update.message.reply_text(
+        "🔐 *Bot protegido*\n\nIntroduce la contraseña para continuar:",
+        parse_mode="Markdown"
     )
+    return STATE_PASSWORD
 
+async def check_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    if text == PASSWORD:
+        authenticated_users.add(user_id)
+        await update.message.reply_text("✅ Acceso concedido.")
+        await show_menu(update, context)
+        return STATE_MENU
+    await update.message.reply_text("❌ Contraseña incorrecta. Inténtalo de nuevo:")
+    return STATE_PASSWORD
 
-def get_mirror_links(post):
-    links = []
+# ─────────────────────────────────────────
+#          FLUJO: BOTONES DEL MENÚ
+# ─────────────────────────────────────────
+
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    if user_id not in authenticated_users:
+        await query.edit_message_text("🔐 Sesión expirada. Usa /start para volver a entrar.")
+        return STATE_PASSWORD
+
+    data = query.data
+
+    if data == "set_source":
+        await query.edit_message_text(
+            "📥 *Canal Origen*\n\nEnvía el ID numérico del canal privado.\n"
+            "Ejemplo: `-1001234567890`\n\n"
+            "_(Añade @userinfobot al canal y escribe /id para obtenerlo)_",
+            parse_mode="Markdown"
+        )
+        return STATE_SET_SOURCE
+
+    elif data == "set_dest":
+        await query.edit_message_text(
+            "📤 *Canal Destino*\n\nEnvía el `@username` o ID numérico del canal.\n"
+            "Ejemplo: `@iUniversoFootball` o `-1009876543210`",
+            parse_mode="Markdown"
+        )
+        return STATE_SET_DEST
+
+    elif data == "send_msg":
+        await query.edit_message_text(
+            "✉️ *Enviar mensaje manual*\n\n"
+            "Escribe el mensaje que quieres publicar en el canal destino.\n\n"
+            "_(Soporta texto normal y emojis)_",
+            parse_mode="Markdown"
+        )
+        return STATE_SEND_MSG
+
+    elif data == "refresh":
+        await show_menu(update, context, edit=True)
+        return STATE_MENU
+
+    return STATE_MENU
+
+async def set_source(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if not text.lstrip("-").isdigit():
+        await update.message.reply_text(
+            "⚠️ El ID debe ser un número negativo. Ej: `-1001234567890`\nInténtalo de nuevo:"
+        )
+        return STATE_SET_SOURCE
+    canal_config["source"] = int(text)
+    save_config(canal_config)
+    await update.message.reply_text(f"✅ Canal origen guardado: `{text}`", parse_mode="Markdown")
+    await show_menu(update, context)
+    return STATE_MENU
+
+async def set_dest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    canal_config["dest"] = int(text) if text.lstrip("-").isdigit() else text
+    save_config(canal_config)
+    await update.message.reply_text(f"✅ Canal destino guardado: `{text}`", parse_mode="Markdown")
+    await show_menu(update, context)
+    return STATE_MENU
+
+async def send_manual_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    dest = canal_config.get("dest")
+    if not dest:
+        await update.message.reply_text("⚠️ No hay canal destino configurado.")
+        await show_menu(update, context)
+        return STATE_MENU
+    text = update.message.text.strip()
     try:
-        url  = f"https://www.reddit.com{post.get('permalink','')}.json?limit=50"
-        resp = requests.get(url, headers=REDDIT_HEADERS, timeout=15)
-        resp.raise_for_status()
-        for c in resp.json()[1]["data"]["children"]:
-            if c["data"].get("author", "").lower() == "automoderator":
-                links.extend(re.findall(r"https?://\S+", c["data"].get("body", "")))
+        await context.bot.send_message(chat_id=dest, text=text)
+        await update.message.reply_text("✅ Mensaje enviado correctamente.")
     except Exception as e:
-        logger.warning(f"Mirror links error: {e}")
-    return links
+        await update.message.reply_text(f"❌ Error al enviar: {e}")
+    await show_menu(update, context)
+    return STATE_MENU
 
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Operación cancelada.")
+    await show_menu(update, context)
+    return STATE_MENU
 
-def cleanup(video):
-    if not video:
+# ─────────────────────────────────────────
+#      HANDLER: POSTS DEL CANAL/GRUPO
+# ─────────────────────────────────────────
+
+async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Detecta si es un post de canal o un mensaje de grupo/supergrupo
+    message = update.channel_post or update.message
+    source  = canal_config.get("source")
+    dest    = canal_config.get("dest")
+
+    if not source or not dest or not message:
         return
-    for key in ("path", "thumb"):
-        p = video.get(key)
-        if p and os.path.exists(p):
-            try:
-                os.remove(p)
-            except Exception:
-                pass
-
-
-async def send_video_to_channel(bot: Bot, channel_id: str, video: dict, caption: str) -> bool:
-    thumb_handle = None
-    try:
-        if video.get("thumb") and os.path.exists(video["thumb"]):
-            thumb_handle = open(video["thumb"], "rb")
-        with open(video["path"], "rb") as f:
-            await bot.send_video(
-                chat_id=channel_id, video=f, caption=caption,
-                supports_streaming=True, duration=video.get("duration"),
-                width=video.get("width"), height=video.get("height"),
-                thumbnail=thumb_handle, parse_mode="Markdown",
-            )
-        return True
-    except TelegramError as e:
-        logger.error(f"Error sending to {channel_id}: {e}")
-        return False
-    finally:
-        if thumb_handle:
-            thumb_handle.close()
-
-
-async def process_submission(bot: Bot, post: dict):
-    data       = load_channels()
-    channel_id = data.get("mirror_channel")
-    if not channel_id:
-        logger.warning("No mirror channel configured — skipping.")
-        return
-
-    # AQUI APLICAMOS EL PARAFRASEO AL TITULO
-    original_title = post["title"]
-    clean_title = paraphrase_title(original_title)
     
-    caption = f"**{clean_title}**\n\nSuscríbete a [Universo Football](https://t.me/iuniversofootball)"
-    links   = [post["url"]] + get_mirror_links(post)
+    # Validar que el mensaje venga del origen configurado
+    if message.chat.id != source:
+        return
 
-    for attempt in range(5):
-        for link in links:
-            video = None
-            try:
-                video = await asyncio.get_event_loop().run_in_executor(None, process_video, link)
-                if video and await send_video_to_channel(bot, channel_id, video, caption):
-                    return
-            except Exception as e:
-                logger.warning(f"[attempt {attempt+1}] {link}: {e}")
-            finally:
-                cleanup(video)
-        if attempt < 4:
-            await asyncio.sleep(60)
+    original_text = message.text or message.caption or ""
+    if not original_text.strip():
+        return
 
-    logger.warning(f"Gave up on: {original_title}")
+    transformed = transform_message(original_text)
+    if transformed is None:
+        return
 
+    logger.info(f"[REENVIANDO]\n{transformed}")
 
-async def check_new_posts(bot: Bot):
-    logger.info(f"Polling r/{SUBREDDIT}...")
     try:
-        posts = await asyncio.get_event_loop().run_in_executor(None, fetch_new_posts)
-        for child in posts:
-            post = child["data"]
-            if post["id"] in seen_posts:
-                continue
-            seen_posts.add(post["id"])
-            if is_media_post(post):
-                asyncio.create_task(process_submission(bot, post))
+        if message.video:
+            await context.bot.send_video(chat_id=dest, video=message.video.file_id, caption=transformed, parse_mode="HTML")
+        elif message.animation:
+            await context.bot.send_animation(chat_id=dest, animation=message.animation.file_id, caption=transformed, parse_mode="HTML")
+        elif message.photo:
+            await context.bot.send_photo(chat_id=dest, photo=message.photo[-1].file_id, caption=transformed, parse_mode="HTML")
+        else:
+            await context.bot.send_message(chat_id=dest, text=transformed, parse_mode="HTML")
     except Exception as e:
-        logger.error(f"check_new_posts error: {e}")
+        logger.error(f"Error al reenviar: {e}")
 
-
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────
+#                   MAIN
+# ─────────────────────────────────────────
 
 def main():
-    threading.Thread(target=start_health_server, daemon=True).start()
-    logger.info(f"Health-check server on port {PORT}")
+    logger.info("Iniciando bot…")
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
 
-    app = Application.builder().token(TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("menu", cmd_menu)],
+        entry_points=[CommandHandler("start", cmd_start)],
         states={
-            STATE_MENU:                  [CallbackQueryHandler(cb_menu)],
-            STATE_CHOOSE_CHANNEL:        [CallbackQueryHandler(cb_choose_channel)],
-            STATE_TYPING_MESSAGE:        [
-                MessageHandler(
-                    filters.TEXT | filters.PHOTO | filters.VIDEO |
-                    filters.Document.ALL | filters.ANIMATION,
-                    receive_message,
-                ),
-                CallbackQueryHandler(cb_menu),
-            ],
-            STATE_ADD_CHANNEL:           [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_add_channel),
-                CallbackQueryHandler(cb_menu),
-            ],
-            STATE_REMOVE_CHANNEL:        [CallbackQueryHandler(cb_remove_channel)],
-            STATE_CHOOSE_MIRROR_CHANNEL: [CallbackQueryHandler(cb_set_mirror)],
+            STATE_PASSWORD:   [MessageHandler(filters.TEXT & ~filters.COMMAND, check_password)],
+            STATE_MENU:       [CallbackQueryHandler(menu_callback)],
+            STATE_SET_SOURCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_source)],
+            STATE_SET_DEST:   [MessageHandler(filters.TEXT & ~filters.COMMAND, set_dest)],
+            STATE_SEND_MSG:   [MessageHandler(filters.TEXT & ~filters.COMMAND, send_manual_message)],
         },
-        fallbacks=[CommandHandler("cancel", cmd_cancel)],
-        per_message=False,
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_user=True,
     )
+
     app.add_handler(conv)
+    
+    # CLAVE: Filtro para incluir mensajes de otros bots y que funcione en canales o grupos
+    # Se usa allow_bot_updates=True para que el bot no ignore a otros bots
+    incoming_handler = MessageHandler(
+        (filters.ChatType.CHANNEL | filters.ChatType.GROUPS) & ~filters.COMMAND, 
+        handle_incoming_message
+    )
+    app.add_handler(incoming_handler)
 
-    scheduler = AsyncIOScheduler(event_loop=loop)
-    scheduler.add_job(check_new_posts, "interval", minutes=1, args=[app.bot])
-
-    async def on_startup(application):
-        posts = fetch_new_posts()
-        for child in posts:
-            seen_posts.add(child["data"]["id"])
-        logger.info(f"Skipping {len(seen_posts)} already-seen posts.")
-        scheduler.start()
-
-    app.post_init = on_startup
-
-    logger.info("Starting bot...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
+    logger.info("Bot en marcha")
+    # Aseguramos que el polling escuche todos los tipos de actualizaciones necesarios
+    app.run_polling(allowed_updates=["message", "channel_post", "callback_query"])
 
 if __name__ == "__main__":
     main()
