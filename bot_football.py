@@ -103,92 +103,32 @@ authenticated_users: set[int] = set()
 # ─────────────────────────────────────────
 
 PT_ES_WORDS = {
-    "Uruguai": "Uruguay",
-    "Alemanha": "Alemania",
-    "Holanda": "Países Bajos",
-    "Países Baixos": "Países Bajos",
-    "Franca": "Francia",
-    "França": "Francia",
-    "Espanha": "España",
-    "Suíça": "Suiza",
-    "Suecia": "Suecia",
-    "Suécia": "Suecia",
-    "Noruega": "Noruega",
-    "Dinamarca": "Dinamarca",
-    "Bélgica": "Bélgica",
-    "Polónia": "Polonia",
-    "Polonia": "Polonia",
-    "Croácia": "Croacia",
-    "Sérvia": "Serbia",
-    "Hungria": "Hungría",
-    "Eslováquia": "Eslovaquia",
-    "Eslovénia": "Eslovenia",
-    "Escocia": "Escocia",
-    "Escócia": "Escocia",
-    "Gales": "Gales",
-    "Irlanda": "Irlanda",
-    "Turquia": "Turquía",
-    "Grécia": "Grecia",
-    "Albânia": "Albania",
-    "Romênia": "Rumanía",
-    "Romenia": "Rumanía",
-    "Ucrânia": "Ucrania",
-    "Rússia": "Rusia",
-    "Russia": "Rusia",
-    "Áustria": "Austria",
-    "Republica Checa": "República Checa",
-    "República Checa": "República Checa",
-    "Marrocos": "Marruecos",
-    "Egipto": "Egipto",
-    "Egito": "Egipto",
-    "Argélia": "Argelia",
-    "Argelia": "Argelia",
-    "Nigéria": "Nigeria",
-    "Senegal": "Senegal",
-    "Costa do Marfim": "Costa de Marfil",
-    "Camarões": "Camerún",
-    "Gana": "Ghana",
-    "Guiné": "Guinea",
-    "Tunísia": "Túnez",
-    "Africa do Sul": "Sudáfrica",
-    "África do Sul": "Sudáfrica",
-    "Japão": "Japón",
-    "Coreia do Sul": "Corea del Sur",
-    "Coreia do Norte": "Corea del Norte",
-    "China": "China",
-    "Arábia Saudita": "Arabia Saudita",
-    "Irão": "Irán",
-    "Iran": "Irán",
-    "Austrália": "Australia",
-    "Nova Zelândia": "Nueva Zelanda",
-    "Estados Unidos": "Estados Unidos",
-    "EUA": "EE.UU.",
-    "México": "México",
-    "Costa Rica": "Costa Rica",
-    "Panamá": "Panamá",
-    "Honduras": "Honduras",
-    "Guatemala": "Guatemala",
-    "Jamaica": "Jamaica",
-    "Trinidad e Tobago": "Trinidad y Tobago",
-    "Colômbia": "Colombia",
-    "Bolívia": "Bolivia",
-    "Paraguai": "Paraguay",
-    "Venezuela": "Venezuela",
-    "Equador": "Ecuador",
-    "Perú": "Perú",
-    "Peru": "Perú",
-    "Chile": "Chile",
-    "Argentina": "Argentina",
-    "Brasil": "Brasil",
-    "Brazil": "Brasil",
-    "Golo": "Gol",
-    "Golos": "Goles",
-    "Assistência": "Asistencia",
-    "Penalti": "Penal",
-    "Pênalti": "Penal",
-    "Autogolo": "Autogol",
-    "Intervalo": "Descanso",
-    "Jogo": "Partido",
+    "Uruguai": "Uruguay", "Alemanha": "Alemania", "Holanda": "Países Bajos",
+    "Países Baixos": "Países Bajos", "Franca": "Francia", "França": "Francia",
+    "Espanha": "España", "Suíça": "Suiza", "Suecia": "Suecia", "Suécia": "Suecia",
+    "Noruega": "Noruega", "Dinamarca": "Dinamarca", "Bélgica": "Bélgica",
+    "Polónia": "Polonia", "Polonia": "Polonia", "Croácia": "Croacia",
+    "Sérvia": "Serbia", "Hungria": "Hungría", "Eslováquia": "Eslovaquia",
+    "Eslovénia": "Eslovenia", "Escocia": "Escocia", "Escócia": "Escocia",
+    "Gales": "Gales", "Irlanda": "Irlanda", "Turquia": "Turquía",
+    "Grécia": "Grecia", "Albânia": "Albania", "Romênia": "Rumanía",
+    "Romenia": "Rumanía", "Ucrânia": "Ucrania", "Rússia": "Rusia",
+    "Russia": "Rusia", "Áustria": "Austria", "Republica Checa": "República Checa",
+    "República Checa": "República Checa", "Marrocos": "Marruecos", "Egipto": "Egipto",
+    "Egito": "Egipto", "Argélia": "Argelia", "Argelia": "Argelia", "Nigéria": "Nigeria",
+    "Senegal": "Senegal", "Costa do Marfim": "Costa de Marfil", "Camarões": "Camerún",
+    "Gana": "Ghana", "Guiné": "Guinea", "Tunísia": "Túnez", "Africa do Sul": "Sudáfrica",
+    "África do Sul": "Sudáfrica", "Japão": "Japón", "Coreia do Sul": "Corea del Sur",
+    "Coreia do Norte": "Corea del Norte", "China": "China", "Arábia Saudita": "Arabia Saudita",
+    "Irão": "Irán", "Iran": "Irán", "Austrália": "Australia", "Nova Zelândia": "Nueva Zelanda",
+    "Estados Unidos": "Estados Unidos", "EUA": "EE.UU.", "México": "México",
+    "Costa Rica": "Costa Rica", "Panamá": "Panamá", "Honduras": "Honduras",
+    "Guatemala": "Guatemala", "Jamaica": "Jamaica", "Trinidad e Tobago": "Trinidad y Tobago",
+    "Colômbia": "Colombia", "Bolívia": "Bolivia", "Paraguai": "Paraguay",
+    "Venezuela": "Venezuela", "Equador": "Ecuador", "Perú": "Perú", "Peru": "Perú",
+    "Chile": "Chile", "Argentina": "Argentina", "Brasil": "Brasil", "Brazil": "Brasil",
+    "Golo": "Gol", "Golos": "Goles", "Assistência": "Asistencia", "Penalti": "Penal",
+    "Pênalti": "Penal", "Autogolo": "Autogol", "Intervalo": "Descanso", "Jogo": "Partido",
 }
 
 PT_ES_HASHTAGS = {
@@ -378,7 +318,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ─────────────────────────────────────────
 
 async def handle_any_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Detecta si el mensaje viene de un canal o de un grupo/supergrupo
     message = update.channel_post or update.message
     source  = canal_config.get("source")
     dest    = canal_config.get("dest")
@@ -386,8 +325,8 @@ async def handle_any_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not source or not dest or not message:
         return
     
-    # Compara el ID del chat de origen
-    if message.chat.id != source:
+    # Verificación de origen flexible (numérica)
+    if str(message.chat.id) != str(source):
         return
 
     original_text = message.text or message.caption or ""
@@ -396,12 +335,8 @@ async def handle_any_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     transformed = transform_message(original_text)
     if transformed is None:
-        logger.info(f"[IGNORADO] {original_text[:60]}…")
         return
 
-    logger.info(f"[ENVIANDO]\n{transformed}")
-
-    # Reenvío de multimedia
     try:
         if message.video:
             await context.bot.send_video(chat_id=dest, video=message.video.file_id, caption=transformed, parse_mode="HTML")
@@ -419,7 +354,7 @@ async def handle_any_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────
 
 def main():
-    logger.info("Iniciando bot…")
+    logger.info("Iniciando bot...")
     threading.Thread(target=run_flask, daemon=True).start()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -440,15 +375,15 @@ def main():
 
     app.add_handler(conv)
     
-    # MODIFICACIÓN CLAVE: Se eliminó filtros.TEXT para que tome mensajes de bots automáticamente
-    # Se escucha en canales y grupos sin importar quién envía el mensaje
+    # CONFIGURACIÓN CLAVE: Se escuchan mensajes de canales y grupos sin excluir bots
     app.add_handler(MessageHandler(
         (filters.ChatType.CHANNEL | filters.ChatType.GROUPS) & ~filters.COMMAND, 
         handle_any_post
     ))
 
-    logger.info("Esperando mensajes (incluyendo de otros bots)...")
-    app.run_polling(allowed_updates=["message", "channel_post", "callback_query"])
+    logger.info("Escuchando mensajes (incluyendo otros bots)...")
+    # Update.ALL_TYPES asegura que el bot reciba actualizaciones de otros bots en canales
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
