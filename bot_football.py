@@ -267,7 +267,7 @@ def transform_message(text: str) -> str | None:
     return "\n".join(parts).strip()
 
 # ─────────────────────────────────────────
-#               HELPERS DE MENÚ
+#                HELPERS DE MENÚ
 # ─────────────────────────────────────────
 
 def build_main_menu() -> InlineKeyboardMarkup:
@@ -337,7 +337,6 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def set_source(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    # Modificado para aceptar IDs de grupos (pueden ser negativos sin empezar por -100)
     if not text.replace("-", "").isdigit():
         await update.message.reply_text("⚠️ El ID debe ser un número. Reintenta:")
         return STATE_SET_SOURCE
@@ -403,17 +402,20 @@ async def handle_any_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"[ENVIANDO]\n{transformed}")
 
     # Reenvío de multimedia
-    if message.video:
-        await context.bot.send_video(chat_id=dest, video=message.video.file_id, caption=transformed, parse_mode="HTML")
-    elif message.animation:
-        await context.bot.send_animation(chat_id=dest, animation=message.animation.file_id, caption=transformed, parse_mode="HTML")
-    elif message.photo:
-        await context.bot.send_photo(chat_id=dest, photo=message.photo[-1].file_id, caption=transformed, parse_mode="HTML")
-    else:
-        await context.bot.send_message(chat_id=dest, text=transformed, parse_mode="HTML")
+    try:
+        if message.video:
+            await context.bot.send_video(chat_id=dest, video=message.video.file_id, caption=transformed, parse_mode="HTML")
+        elif message.animation:
+            await context.bot.send_animation(chat_id=dest, animation=message.animation.file_id, caption=transformed, parse_mode="HTML")
+        elif message.photo:
+            await context.bot.send_photo(chat_id=dest, photo=message.photo[-1].file_id, caption=transformed, parse_mode="HTML")
+        else:
+            await context.bot.send_message(chat_id=dest, text=transformed, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Error al reenviar: {e}")
 
 # ─────────────────────────────────────────
-#                   MAIN
+#                    MAIN
 # ─────────────────────────────────────────
 
 def main():
@@ -438,13 +440,14 @@ def main():
 
     app.add_handler(conv)
     
-    # Este handler ahora captura tanto mensajes de canal como de grupos
+    # MODIFICACIÓN CLAVE: Se eliminó filtros.TEXT para que tome mensajes de bots automáticamente
+    # Se escucha en canales y grupos sin importar quién envía el mensaje
     app.add_handler(MessageHandler(
         (filters.ChatType.CHANNEL | filters.ChatType.GROUPS) & ~filters.COMMAND, 
         handle_any_post
     ))
 
-    logger.info("Esperando mensajes...")
+    logger.info("Esperando mensajes (incluyendo de otros bots)...")
     app.run_polling(allowed_updates=["message", "channel_post", "callback_query"])
 
 if __name__ == "__main__":
