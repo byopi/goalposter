@@ -1,7 +1,3 @@
-"""
-Bot de Telegram - Reenvío de goles con panel de control
-Adaptado para José - Universo Football
-"""
 
 import re
 import logging
@@ -36,7 +32,7 @@ PORT           = int(os.getenv("PORT", 8080))
 CONFIG_FILE    = Path("/tmp/canal_config.json")
 
 # ─────────────────────────────────────────
-#        PERSISTENCIA DE CANALES
+#        PERSISTENCIA DE CONFIGURACIÓN
 # ─────────────────────────────────────────
 
 def load_config() -> dict:
@@ -55,181 +51,132 @@ def save_config(data: dict):
 canal_config = load_config()
 
 # ─────────────────────────────────────────
-#              LOGGING
+#              LOGGING & FLASK
 # ─────────────────────────────────────────
 
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────
-#    SERVIDOR FLASK (keepalive para Render)
-# ─────────────────────────────────────────
-
 flask_app = Flask(__name__)
-
 @flask_app.route("/")
 def home():
-    src = canal_config.get("source") or "no configurado"
-    dst = canal_config.get("dest")   or "no configurado"
-    return f"<h2>✅ Bot activo</h2><p>Origen ID: {src}</p><p>Destino: {dst}</p>", 200
+    return f"Bot Activo. Origen: {canal_config.get('source')} | Destino: {canal_config.get('dest')}", 200
 
 def run_flask():
     flask_app.run(host="0.0.0.0", port=PORT)
 
 # ─────────────────────────────────────────
-#      ESTADOS DE CONVERSACIÓN (menú)
+#         LÓGICA DE TRANSFORMACIÓN
 # ─────────────────────────────────────────
 
-(STATE_PASSWORD, STATE_MENU, STATE_SET_SOURCE, STATE_SET_DEST, STATE_SEND_MSG) = range(5)
-authenticated_users: set[int] = set()
-
-# ─────────────────────────────────────────
-#         TRADUCCIÓN PORTUGUÉS → ESPAÑOL
-# ─────────────────────────────────────────
-
-PT_ES_WORDS = {
-    "Uruguai": "Uruguay", "Alemanha": "Alemania", "Holanda": "Países Bajos",
-    "Países Baixos": "Países Bajos", "Franca": "Francia", "França": "Francia",
-    "Espanha": "España", "Suíça": "Suiza", "Suecia": "Suecia", "Suécia": "Suecia",
-    "Noruega": "Noruega", "Dinamarca": "Dinamarca", "Bélgica": "Bélgica",
-    "Polónia": "Polonia", "Polonia": "Polonia", "Croácia": "Croacia",
-    "Sérvia": "Serbia", "Hungria": "Hungría", "Eslováquia": "Eslovaquia",
-    "Eslovénia": "Eslovenia", "Escocia": "Escocia", "Escócia": "Escocia",
-    "Gales": "Gales", "Irlanda": "Irlanda", "Turquia": "Turquía",
-    "Grécia": "Grecia", "Albânia": "Albania", "Romênia": "Rumanía",
-    "Romenia": "Rumanía", "Ucrânia": "Ucrania", "Rússia": "Rusia",
-    "Russia": "Rusia", "Áustria": "Austria", "Republica Checa": "República Checa",
-    "República Checa": "República Checa", "Marrocos": "Marruecos", "Egipto": "Egipto",
-    "Egito": "Egipto", "Argélia": "Argelia", "Argelia": "Argelia", "Nigéria": "Nigeria",
-    "Senegal": "Senegal", "Costa do Marfim": "Costa de Marfil", "Camarões": "Camerún",
-    "Gana": "Ghana", "Guiné": "Guinea", "Tunísia": "Túnez", "Africa do Sul": "Sudáfrica",
-    "África do Sul": "Sudáfrica", "Japão": "Japón", "Coreia do Sul": "Corea del Sur",
-    "Coreia do Norte": "Corea del Norte", "China": "China", "Arábia Saudita": "Arabia Saudita",
-    "Irão": "Irán", "Iran": "Irán", "Austrália": "Australia", "Nova Zelândia": "Nueva Zelanda",
-    "Estados Unidos": "Estados Unidos", "EUA": "EE.UU.", "México": "México",
-    "Costa Rica": "Costa Rica", "Panamá": "Panamá", "Honduras": "Honduras",
-    "Guatemala": "Guatemala", "Jamaica": "Jamaica", "Trinidad e Tobago": "Trinidad y Tobago",
-    "Colômbia": "Colombia", "Bolívia": "Bolivia", "Paraguai": "Paraguay",
-    "Venezuela": "Venezuela", "Equador": "Ecuador", "Perú": "Perú", "Peru": "Perú",
-    "Chile": "Chile", "Argentina": "Argentina", "Brasil": "Brasil", "Brazil": "Brasil",
-    "Golo": "Gol", "Golos": "Goles", "Assistência": "Asistencia", "Penalti": "Penal",
-    "Pênalti": "Penal", "Autogolo": "Autogol", "Intervalo": "Descanso", "Jogo": "Partido",
-}
-
-PT_ES_HASHTAGS = {
-    "#RepescagemUEFA": "#RepescaUEFA",
-    "#RepescagemIntercontinental": "#RepescaFIFA",
-}
-
-def translate_pt_es(text: str) -> str:
-    for pt, es in PT_ES_HASHTAGS.items():
+def transform_message(text: str) -> str | None:
+    if not text: return None
+    
+    # Traducción rápida de términos clave
+    replacements = {"Golo": "Gol", "Golos": "Goles", "Jogo": "Partido", "França": "Francia"}
+    for pt, es in replacements.items():
         text = re.sub(re.escape(pt), es, text, flags=re.IGNORECASE)
-    for pt, es in PT_ES_WORDS.items():
-        text = re.sub(r'(?<![\w#])' + re.escape(pt) + r'(?![\w])', es, text, flags=re.IGNORECASE)
-    return text
+    
+    # Verificación flexible de Goles (según image_0af387.jpg)
+    if not any(kw in text.upper() for kw in ["GOL", "⚽"]):
+        return None
+
+    # Limpiar líneas de marcador (Ej: 3x1 -> 3-1)
+    text = re.sub(r'(\d+)\s*[xX×]\s*(\d+)', r'\1-\2', text)
+    
+    # Eliminar banderas/emojis de países para dejarlo más limpio si se desea
+    # text = re.sub(r'[\U0001F1E0-\U0001F1FF]{2}', '', text)
+
+    return f"{text}\n\n<i>{SUBSCRIBE_LINK}</i>"
 
 # ─────────────────────────────────────────
-#                HANDLERS PANEL
+#          PANEL DE CONTROL (MENÚ)
 # ─────────────────────────────────────────
 
-def build_main_menu():
-    src = canal_config.get("source") or "❌ No configurado"
-    dst = canal_config.get("dest")   or "❌ No configurado"
+(STATE_PASSWORD, STATE_MENU, STATE_SET_SOURCE, STATE_SET_DEST) = range(4)
+auth_users = set()
+
+def get_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"📥 Origen: {src}", callback_data="set_source")],
-        [InlineKeyboardButton(f"📤 Destino: {dst}", callback_data="set_dest")],
-        [InlineKeyboardButton("✉️ Manual", callback_data="send_msg")],
-        [InlineKeyboardButton("🔄 Recargar", callback_data="refresh")]
+        [InlineKeyboardButton(f"📥 Origen: {canal_config.get('source')}", callback_data="src")],
+        [InlineKeyboardButton(f"📤 Destino: {canal_config.get('dest')}", callback_data="dst")],
+        [InlineKeyboardButton("🔄 Refrescar", callback_data="ref")]
     ])
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id in authenticated_users:
-        await update.message.reply_text("🎛 Panel:", reply_markup=build_main_menu())
+async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    if u.effective_user.id in auth_users:
+        await u.message.reply_text("🎛 Panel:", reply_markup=get_kb())
         return STATE_MENU
-    await update.message.reply_text("🔐 Contraseña:")
+    await u.message.reply_text("🔐 Contraseña:")
     return STATE_PASSWORD
 
-async def check_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.strip() == PASSWORD:
-        authenticated_users.add(update.effective_user.id)
-        await update.message.reply_text("✅ Acceso concedido.", reply_markup=build_main_menu())
+async def check_pw(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    if u.message.text == PASSWORD:
+        auth_users.add(u.effective_user.id)
+        await u.message.reply_text("✅ Acceso OK", reply_markup=get_kb())
         return STATE_MENU
-    await update.message.reply_text("❌ Incorrecta.")
     return STATE_PASSWORD
 
-async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data == "set_source":
-        await query.edit_message_text("📥 Envía el ID del canal (ej: -100...):")
+async def menu_cb(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    q = u.callback_query
+    await q.answer()
+    if q.data == "src":
+        await q.edit_message_text("Envía el ID de Origen:")
         return STATE_SET_SOURCE
-    elif query.data == "set_dest":
-        await query.edit_message_text("📤 Envía el @username o ID destino:")
+    elif q.data == "dst":
+        await q.edit_message_text("Envía el @Username o ID Destino:")
         return STATE_SET_DEST
-    elif query.data == "send_msg":
-        await query.edit_message_text("✉️ Escribe el mensaje:")
-        return STATE_SEND_MSG
-    elif query.data == "refresh":
-        await query.edit_message_text("🎛 Panel:", reply_markup=build_main_menu())
+    await q.edit_message_text("🎛 Panel:", reply_markup=get_kb())
     return STATE_MENU
 
-async def set_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    canal_config["source"] = text # Lo guardamos como string para evitar errores de casting
+async def save_src(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    canal_config["source"] = u.message.text.strip()
     save_config(canal_config)
-    await update.message.reply_text(f"✅ Origen: `{text}`", reply_markup=build_main_menu(), parse_mode="Markdown")
+    await u.message.reply_text("✅ Origen Guardado", reply_markup=get_kb())
     return STATE_MENU
 
-async def set_dest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    canal_config["dest"] = text
+async def save_dst(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    canal_config["dest"] = u.message.text.strip()
     save_config(canal_config)
-    await update.message.reply_text(f"✅ Destino: `{text}`", reply_markup=build_main_menu(), parse_mode="Markdown")
-    return STATE_MENU
-
-async def send_manual_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    dest = canal_config.get("dest")
-    try:
-        await context.bot.send_message(chat_id=dest, text=update.message.text)
-        await update.message.reply_text("✅ Enviado.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+    await u.message.reply_text("✅ Destino Guardado", reply_markup=get_kb())
     return STATE_MENU
 
 # ─────────────────────────────────────────
-#    HANDLER CRÍTICO: DETECCIÓN DE MENSAJES
+#    REENVÍO AUTOMÁTICO (FIX MULTIMEDIA)
 # ─────────────────────────────────────────
 
-async def handle_any_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.channel_post or update.message
-    if not message: return
+async def forward_logic(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    # Detectar el mensaje sin importar si es post de canal o mensaje de grupo
+    m = u.channel_post or u.message
+    if not m: return
 
-    source = str(canal_config.get("source"))
-    dest = canal_config.get("dest")
-    
-    # DEBUG LOG: Esto te dirá en Render qué ID está viendo el bot realmente
-    logger.info(f"DEBUG: Mensaje recibido del Chat ID: {message.chat.id}")
+    src = str(canal_config.get("source"))
+    dst = canal_config.get("dest")
 
-    if str(message.chat.id) != source or not dest:
+    # Log para depuración en Render
+    logger.info(f"Mensaje de ID: {m.chat.id}")
+
+    if str(m.chat.id) != src or not dst:
         return
 
-    original_text = message.text or message.caption or ""
-    transformed = transform_message(original_text)
-    
-    if not transformed: return
+    # Extraer texto de cualquier fuente (mensaje normal o pie de foto/video)
+    raw_text = m.text or m.caption or ""
+    final_text = transform_message(raw_text)
+
+    if not final_text: return
 
     try:
-        if message.video:
-            await context.bot.send_video(dest, message.video.file_id, caption=transformed, parse_mode="HTML")
-        elif message.photo:
-            await context.bot.send_photo(dest, message.photo[-1].file_id, caption=transformed, parse_mode="HTML")
+        # Prioridad a Video -> Foto -> Texto
+        if m.video:
+            await c.bot.send_video(dst, m.video.file_id, caption=final_text, parse_mode="HTML")
+        elif m.photo:
+            await c.bot.send_photo(dst, m.photo[-1].file_id, caption=final_text, parse_mode="HTML")
+        elif m.animation: # Para los GIFs
+            await c.bot.send_animation(dst, m.animation.file_id, caption=final_text, parse_mode="HTML")
         else:
-            await context.bot.send_message(dest, transformed, parse_mode="HTML")
+            await c.bot.send_message(dst, final_text, parse_mode="HTML")
     except Exception as e:
-        logger.error(f"Error reenviando: {e}")
+        logger.error(f"Error al reenviar: {e}")
 
 # ─────────────────────────────────────────
 #                    MAIN
@@ -240,24 +187,21 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", cmd_start)],
+        entry_points=[CommandHandler("start", start)],
         states={
-            STATE_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_password)],
-            STATE_MENU: [CallbackQueryHandler(menu_callback)],
-            STATE_SET_SOURCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_source)],
-            STATE_SET_DEST: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_dest)],
-            STATE_SEND_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_manual_message)],
+            STATE_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_pw)],
+            STATE_MENU: [CallbackQueryHandler(menu_cb)],
+            STATE_SET_SOURCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_src)],
+            STATE_SET_DEST: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_dst)],
         },
-        fallbacks=[CommandHandler("start", cmd_start)]
+        fallbacks=[CommandHandler("start", start)]
     )
 
     app.add_handler(conv)
     
-    # IMPORTANTE: Captura TODO (fotos, videos, texto) de canales y grupos
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_any_post))
+    # Escucha TODO (fotos, videos, texto) de canales y grupos
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_logic))
 
-    logger.info("Bot arrancado. Revisa logs para ver los IDs de entrada.")
-    # Update.ALL_TYPES es vital para recibir mensajes de otros bots en canales
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
