@@ -1,6 +1,6 @@
 """
 Bot de Telegram - Reenvío de goles con panel de control
-Adaptado para Render.com + Uptime Robot (keepalive HTTP server incluido)
+Adaptado para José - Universo Football
 """
 
 import re
@@ -32,8 +32,8 @@ load_dotenv()
 BOT_TOKEN      = os.getenv("BOT_TOKEN")
 SUBSCRIBE_LINK = os.getenv("SUBSCRIBE_LINK", "Suscríbete en t.me/iUniversoFootball")
 PASSWORD       = os.getenv("PASSWORD", "gfa1234")
-PORT           = int(os.getenv("PORT", 8080))   # Render inyecta $PORT automáticamente
-CONFIG_FILE    = Path("/tmp/canal_config.json")  # /tmp es escribible en Render
+PORT           = int(os.getenv("PORT", 8080))
+CONFIG_FILE    = Path("/tmp/canal_config.json")
 
 # ─────────────────────────────────────────
 #        PERSISTENCIA DE CANALES
@@ -41,12 +41,15 @@ CONFIG_FILE    = Path("/tmp/canal_config.json")  # /tmp es escribible en Render
 
 def load_config() -> dict:
     if CONFIG_FILE.exists():
-        with open(CONFIG_FILE) as f:
-            return json.load(f)
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {"source": None, "dest": None}
     return {"source": None, "dest": None}
 
 def save_config(data: dict):
-    with open(CONFIG_FILE, "w") as f:
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f)
 
 canal_config = load_config()
@@ -71,15 +74,7 @@ flask_app = Flask(__name__)
 def home():
     src = canal_config.get("source") or "no configurado"
     dst = canal_config.get("dest")   or "no configurado"
-    return (
-        f"<h2>✅ Bot activo</h2>"
-        f"<p>Chat/Canal origen: <code>{src}</code></p>"
-        f"<p>Chat/Canal destino: <code>{dst}</code></p>"
-    ), 200
-
-@flask_app.route("/health")
-def health():
-    return "OK", 200
+    return f"<h2>✅ Bot activo</h2><p>Origen ID: {src}</p><p>Destino: {dst}</p>", 200
 
 def run_flask():
     flask_app.run(host="0.0.0.0", port=PORT)
@@ -88,14 +83,7 @@ def run_flask():
 #      ESTADOS DE CONVERSACIÓN (menú)
 # ─────────────────────────────────────────
 
-(
-    STATE_PASSWORD,
-    STATE_MENU,
-    STATE_SET_SOURCE,
-    STATE_SET_DEST,
-    STATE_SEND_MSG,
-) = range(5)
-
+(STATE_PASSWORD, STATE_MENU, STATE_SET_SOURCE, STATE_SET_DEST, STATE_SEND_MSG) = range(5)
 authenticated_users: set[int] = set()
 
 # ─────────────────────────────────────────
@@ -144,245 +132,132 @@ def translate_pt_es(text: str) -> str:
     return text
 
 # ─────────────────────────────────────────
-#         LÓGICA DE TRANSFORMACIÓN
+#                HANDLERS PANEL
 # ─────────────────────────────────────────
 
-def transform_message(text: str) -> str | None:
-    text = translate_pt_es(text)
-    lines = text.strip().splitlines()
-    first_line = lines[0].upper() if lines else ""
-    goal_keywords = ["GOL", "GOAL", "GOLO", "⚽"]
-    if not any(kw in first_line for kw in goal_keywords):
-        return None
-
-    score_line = scorer_line = assist_line = hashtag_line = global_line = None
-    for line in lines:
-        s = line.strip()
-        if re.search(r'\d+\s*[xX×]\s*\d+', s) and not s.startswith("🏆") and not s.startswith("#"):
-            score_line = s
-        if s.startswith("⚽"):
-            scorer_line = s
-        if s.startswith("🅰"):
-            assist_line = s
-        if s.startswith("#"):
-            hashtag_line = s
-        if s.startswith("🏆"):
-            inner = s.replace("🏆", "").strip()
-            global_match = re.search(r'(#\S+.*?)\s*-\s*(.+)', inner)
-            if global_match:
-                hashtag_part = global_match.group(1).strip()
-                global_part  = global_match.group(2).strip()
-                global_clean = re.sub(r'[\U0001F1E0-\U0001F1FF]{2}', '', global_part).strip()
-                global_clean = re.sub(r'\s{2,}', ' ', global_clean).strip()
-                global_clean = re.sub(r'(\d+)\s*[xX×]\s*(\d+)', r'\1-\2', global_clean)
-                hashtag_line = hashtag_part
-                global_line  = f"(Global: {global_clean})"
-            elif inner.startswith("#"):
-                hashtag_line = inner
-
-    if score_line:
-        clean = re.sub(r'[\U0001F1E0-\U0001F1FF]{2}', '', score_line).strip()
-        clean = re.sub(r'\s{2,}', ' ', clean).strip()
-        clean = re.sub(r'(\d+)\s*[xX×]\s*(\d+)', r'\1-\2', clean)
-    else:
-        clean = None
-
-    hashtag_display = None
-    if hashtag_line:
-        hashtag_display = f"{hashtag_line} {global_line}" if global_line else hashtag_line
-
-    parts = []
-    if clean:
-        parts.append(f"<b>{clean}</b>")
-    parts.append("")
-    if scorer_line:
-        parts.append(scorer_line)
-    if assist_line:
-        parts.append(assist_line)
-    parts.append("")
-    if hashtag_display:
-        parts.append(f"<b>{hashtag_display}</b>")
-    parts.append("")
-    parts.append(f"<i>{SUBSCRIBE_LINK}</i>")
-    return "\n".join(parts).strip()
-
-# ─────────────────────────────────────────
-#                HELPERS DE MENÚ
-# ─────────────────────────────────────────
-
-def build_main_menu() -> InlineKeyboardMarkup:
+def build_main_menu():
     src = canal_config.get("source") or "❌ No configurado"
     dst = canal_config.get("dest")   or "❌ No configurado"
-    keyboard = [
-        [InlineKeyboardButton(f"📥 Origen: {src}",  callback_data="set_source")],
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"📥 Origen: {src}", callback_data="set_source")],
         [InlineKeyboardButton(f"📤 Destino: {dst}", callback_data="set_dest")],
-        [InlineKeyboardButton("✉️ Enviar manual",  callback_data="send_msg")],
-        [InlineKeyboardButton("🔄 Recargar menú",   callback_data="refresh")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+        [InlineKeyboardButton("✉️ Manual", callback_data="send_msg")],
+        [InlineKeyboardButton("🔄 Recargar", callback_data="refresh")]
+    ])
 
-async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edit=False):
-    text   = "🎛 *Panel de control*\n\nSelecciona una opción:"
-    markup = build_main_menu()
-    if edit and update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
-    else:
-        await update.effective_message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
-
-# ─────────────────────────────────────────
-#         FLUJO: /start + contraseña
-# ─────────────────────────────────────────
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    if user_id in authenticated_users:
-        await show_menu(update, context)
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id in authenticated_users:
+        await update.message.reply_text("🎛 Panel:", reply_markup=build_main_menu())
         return STATE_MENU
-    await update.message.reply_text("🔐 *Bot protegido*\n\nIntroduce la contraseña:", parse_mode="Markdown")
+    await update.message.reply_text("🔐 Contraseña:")
     return STATE_PASSWORD
 
-async def check_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
+async def check_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text.strip() == PASSWORD:
-        authenticated_users.add(user_id)
-        await update.message.reply_text("✅ Acceso concedido.")
-        await show_menu(update, context)
+        authenticated_users.add(update.effective_user.id)
+        await update.message.reply_text("✅ Acceso concedido.", reply_markup=build_main_menu())
         return STATE_MENU
-    await update.message.reply_text("❌ Contraseña incorrecta. Reintenta:")
+    await update.message.reply_text("❌ Incorrecta.")
     return STATE_PASSWORD
 
-# ─────────────────────────────────────────
-#         FLUJO: BOTONES DEL MENÚ
-# ─────────────────────────────────────────
-
-async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if update.effective_user.id not in authenticated_users:
-        await query.edit_message_text("🔐 Sesión expirada. Usa /start.")
-        return STATE_PASSWORD
-
     if query.data == "set_source":
-        await query.edit_message_text("📥 *Origen*\nEnvía el ID numérico del canal o grupo.", parse_mode="Markdown")
+        await query.edit_message_text("📥 Envía el ID del canal (ej: -100...):")
         return STATE_SET_SOURCE
     elif query.data == "set_dest":
-        await query.edit_message_text("📤 *Destino*\nEnvía el `@username` o ID numérico.", parse_mode="Markdown")
+        await query.edit_message_text("📤 Envía el @username o ID destino:")
         return STATE_SET_DEST
     elif query.data == "send_msg":
-        await query.edit_message_text("✉️ *Manual*\nEscribe el mensaje a publicar.", parse_mode="Markdown")
+        await query.edit_message_text("✉️ Escribe el mensaje:")
         return STATE_SEND_MSG
     elif query.data == "refresh":
-        await show_menu(update, context, edit=True)
+        await query.edit_message_text("🎛 Panel:", reply_markup=build_main_menu())
     return STATE_MENU
 
-async def set_source(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def set_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    if not text.replace("-", "").isdigit():
-        await update.message.reply_text("⚠️ El ID debe ser un número. Reintenta:")
-        return STATE_SET_SOURCE
-    canal_config["source"] = int(text)
+    canal_config["source"] = text # Lo guardamos como string para evitar errores de casting
     save_config(canal_config)
-    await update.message.reply_text(f"✅ Origen guardado: `{text}`", parse_mode="Markdown")
-    await show_menu(update, context)
+    await update.message.reply_text(f"✅ Origen: `{text}`", reply_markup=build_main_menu(), parse_mode="Markdown")
     return STATE_MENU
 
-async def set_dest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def set_dest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    canal_config["dest"] = int(text) if text.replace("-", "").isdigit() else text
+    canal_config["dest"] = text
     save_config(canal_config)
-    await update.message.reply_text(f"✅ Destino guardado: `{text}`", parse_mode="Markdown")
-    await show_menu(update, context)
+    await update.message.reply_text(f"✅ Destino: `{text}`", reply_markup=build_main_menu(), parse_mode="Markdown")
     return STATE_MENU
 
-async def send_manual_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def send_manual_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dest = canal_config.get("dest")
-    if not dest:
-        await update.message.reply_text("⚠️ Sin destino configurado.")
-        await show_menu(update, context)
-        return STATE_MENU
     try:
-        await context.bot.send_message(chat_id=dest, text=update.message.text.strip())
+        await context.bot.send_message(chat_id=dest, text=update.message.text)
         await update.message.reply_text("✅ Enviado.")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
-    await show_menu(update, context)
-    return STATE_MENU
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Cancelado.")
-    await show_menu(update, context)
     return STATE_MENU
 
 # ─────────────────────────────────────────
-#    HANDLER: POSTS DE CANAL Y GRUPO
+#    HANDLER CRÍTICO: DETECCIÓN DE MENSAJES
 # ─────────────────────────────────────────
 
 async def handle_any_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.channel_post or update.message
-    source  = canal_config.get("source")
-    dest    = canal_config.get("dest")
+    if not message: return
 
-    if not source or not dest or not message:
-        return
+    source = str(canal_config.get("source"))
+    dest = canal_config.get("dest")
     
-    # Verificación de origen flexible (numérica)
-    if str(message.chat.id) != str(source):
+    # DEBUG LOG: Esto te dirá en Render qué ID está viendo el bot realmente
+    logger.info(f"DEBUG: Mensaje recibido del Chat ID: {message.chat.id}")
+
+    if str(message.chat.id) != source or not dest:
         return
 
     original_text = message.text or message.caption or ""
-    if not original_text.strip():
-        return
-
     transformed = transform_message(original_text)
-    if transformed is None:
-        return
+    
+    if not transformed: return
 
     try:
         if message.video:
-            await context.bot.send_video(chat_id=dest, video=message.video.file_id, caption=transformed, parse_mode="HTML")
-        elif message.animation:
-            await context.bot.send_animation(chat_id=dest, animation=message.animation.file_id, caption=transformed, parse_mode="HTML")
+            await context.bot.send_video(dest, message.video.file_id, caption=transformed, parse_mode="HTML")
         elif message.photo:
-            await context.bot.send_photo(chat_id=dest, photo=message.photo[-1].file_id, caption=transformed, parse_mode="HTML")
+            await context.bot.send_photo(dest, message.photo[-1].file_id, caption=transformed, parse_mode="HTML")
         else:
-            await context.bot.send_message(chat_id=dest, text=transformed, parse_mode="HTML")
+            await context.bot.send_message(dest, transformed, parse_mode="HTML")
     except Exception as e:
-        logger.error(f"Error al reenviar: {e}")
+        logger.error(f"Error reenviando: {e}")
 
 # ─────────────────────────────────────────
 #                    MAIN
 # ─────────────────────────────────────────
 
 def main():
-    logger.info("Iniciando bot...")
     threading.Thread(target=run_flask, daemon=True).start()
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", cmd_start)],
         states={
-            STATE_PASSWORD:   [MessageHandler(filters.TEXT & ~filters.COMMAND, check_password)],
-            STATE_MENU:       [CallbackQueryHandler(menu_callback)],
+            STATE_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_password)],
+            STATE_MENU: [CallbackQueryHandler(menu_callback)],
             STATE_SET_SOURCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_source)],
-            STATE_SET_DEST:   [MessageHandler(filters.TEXT & ~filters.COMMAND, set_dest)],
-            STATE_SEND_MSG:   [MessageHandler(filters.TEXT & ~filters.COMMAND, send_manual_message)],
+            STATE_SET_DEST: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_dest)],
+            STATE_SEND_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_manual_message)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_user=True,
-        per_chat=True,
+        fallbacks=[CommandHandler("start", cmd_start)]
     )
 
     app.add_handler(conv)
     
-    # CONFIGURACIÓN CLAVE: Se escuchan mensajes de canales y grupos sin excluir bots
-    app.add_handler(MessageHandler(
-        (filters.ChatType.CHANNEL | filters.ChatType.GROUPS) & ~filters.COMMAND, 
-        handle_any_post
-    ))
+    # IMPORTANTE: Captura TODO (fotos, videos, texto) de canales y grupos
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_any_post))
 
-    logger.info("Escuchando mensajes (incluyendo otros bots)...")
-    # Update.ALL_TYPES asegura que el bot reciba actualizaciones de otros bots en canales
+    logger.info("Bot arrancado. Revisa logs para ver los IDs de entrada.")
+    # Update.ALL_TYPES es vital para recibir mensajes de otros bots en canales
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
